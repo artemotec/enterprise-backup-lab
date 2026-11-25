@@ -1,0 +1,54 @@
+services:
+  minio:
+    image: chrislusf/seaweedfs:latest
+    container_name: backup-s3
+    command: server -dir=/data -s3 -s3.port=9000 -s3.config=/etc/seaweedfs/s3.json -s3.cert.file=/etc/seaweedfs/cert.pem -s3.key.file=/etc/seaweedfs/key.pem
+    ports:
+      - "9000:9000"
+      - "8888:8888"
+    volumes:
+      - minio_data:/data
+      - ./s3/s3.json:/etc/seaweedfs/s3.json:ro
+      - ./s3/cert.pem:/etc/seaweedfs/cert.pem:ro
+      - ./s3/key.pem:/etc/seaweedfs/key.pem:ro
+
+  s3-init:
+    image: chrislusf/seaweedfs:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until echo 's3.bucket.list' | weed shell -master=minio:9333 2>/dev/null | grep -q 'pg-backups'; do
+        echo 'Creating bucket pg-backups...';
+        echo 's3.bucket.create -name pg-backups' | weed shell -master=minio:9333 || true;
+        sleep 2;
+      done;
+      echo 'Bucket pg-backups is ready.';
+      "
+
+  pg-primary:
+    build: ./postgres
+    container_name: pg-primary
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: strongpassword
+      POSTGRES_DB: prod_db
+    volumes:
+      - pg_primary_data:/var/lib/postgresql/data
+      - ./postgres/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+
+  pg-dr:
+    build: ./postgres
+    container_name: pg-dr
+    volumes:
+      - pg_dr_data:/var/lib/postgresql/data
+      - ./postgres/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    entrypoint: ["/bin/sh", "-c", "chown -R postgres:postgres /var/lib/postgresql/data && tail -f /dev/null"]
+
+volumes:
+  minio_data:
+  pg_primary_data:
+  pg_dr_data:
