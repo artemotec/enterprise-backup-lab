@@ -1,6 +1,8 @@
 # Enterprise Backup Lab (PostgreSQL 16 + MS SQL Server 2022)
 
-Лабораторный стенд, моделирующий промышленный контур резервного копирования и аварийного восстановления (Disaster Recovery) для высокодоступных СУБД (24×7×365) без остановки транзакций.
+[![Enterprise Backup CI/CD](https://github.com/artemotec/enterprise-backup-lab/actions/workflows/ci-dr.yml/badge.svg)](https://github.com/artemotec/enterprise-backup-lab/actions/workflows/ci-dr.yml)
+
+Лабораторный стенд, моделирующий промышленный контур резервного копирования и аварийного восстановления (Disaster Recovery) для высокодоступных СУБД (24×7×365) без остановки транзакций, с автоматической верификацией бэкапов через **GitHub Actions CI/CD**.
 
 ## Сравнительная таблица модулей
 
@@ -12,10 +14,21 @@
 | **Целевой RPO** | Близкий к нулю (непрерывный WAL) | **RPO = 0** (через Tail-Log Backup) |
 | **Сценарии аварии** | Логическая ошибка (`DROP TABLE`) → PITR | Потеря файла данных `.mdf` + разрыв LSN |
 
+## CI/CD и Continuous DR Testing
+
+В репозитории настроен конвейер **GitHub Actions** (`.github/workflows/ci-dr.yml`), работающий на **Self-Hosted Runner** (Linux / WSL2 + Docker) и реализующий принцип **3-2-1-1-0** (автоматическая верификация восстанавливаемости):
+
+1. **Lint & Validate:** проверка синтаксиса и прав исполнения (`+x`) всех bash-скриптов, валидация `s3/s3.json` и манифестов `docker-compose.yml`.
+2. **Automated DR Test — PostgreSQL 16:** генерация TLS-сертификатов, подъём чистого стека с SeaweedFS S3, инициализация `pgBackRest`, воспроизведение аварии (`DROP TABLE`) и автоматический PITR на узел `pg-dr`.
+3. **Automated DR Test — MS SQL Server 2022:** прогон потери файла данных `.mdf` с восстановлением через Tail-Log Backup (`RPO = 0`) и проверка защиты LSN-цепочки через `WITH COPY_ONLY`.
+4. **Аудит и расписание:** логи восстановления с замеренным **RTO** сохраняются в **GitHub Artifacts** (`postgres-dr-report`, `mssql-dr-report`) сроком на 30 дней; пайплайн запускается при каждом `push`, вручную (`workflow_dispatch`) и по ночному расписанию (`cron: 0 3 * * *`).
+
 ## Структура репозитория
 
 ```text
 enterprise-backup-lab/
+├── .github/workflows/
+│   └── ci-dr.yml                       # CI/CD пайплайн: Lint + DR-тесты + RTO-артефакты
 ├── docker-compose.yml                  # Модуль 1: PostgreSQL 16 + pgBackRest + S3 (TLS)
 ├── postgres/                           # Dockerfile, инициализация WAL и pgbackrest.conf
 ├── s3/                                 # Конфигурация SeaweedFS S3
@@ -33,7 +46,7 @@ enterprise-backup-lab/
 
 ### Модуль 1: PostgreSQL 16 + pgBackRest + S3
 ```bash
-git clone [https://github.com/](https://github.com/)<твой-ник>/enterprise-backup-lab.git
+git clone [https://github.com/artemotec/enterprise-backup-lab.git](https://github.com/artemotec/enterprise-backup-lab.git)
 cd enterprise-backup-lab
 
 # 1. Генерация TLS-сертификата для S3
