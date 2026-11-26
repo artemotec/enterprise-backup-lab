@@ -1,0 +1,15 @@
+services:
+  mssql-prod:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: mssql-prod
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "StrongPassword123!"
+      MSSQL_PID: "Developer"
+    ports:
+      - "11433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+
+volumes:
+  mssql_data:
