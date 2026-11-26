@@ -33,6 +33,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: strongpassword
       POSTGRES_DB: prod_db
+    ports:
+      - "15432:5432"
     volumes:
       - pg_primary_data:/var/lib/postgresql/data
       - ./postgres/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
@@ -43,6 +45,8 @@ services:
   pg-dr:
     build: ./postgres
     container_name: pg-dr
+    ports:
+      - "15433:5432"
     volumes:
       - pg_dr_data:/var/lib/postgresql/data
       - ./postgres/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
