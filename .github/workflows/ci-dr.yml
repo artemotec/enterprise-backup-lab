@@ -5,11 +5,13 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  schedule:
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 jobs:
   validate:
-    name: Lint & Validate Infrastructure
+    name: 1. Lint & Validate Infrastructure
     runs-on: self-hosted
     steps:
       - name: Checkout repository
@@ -30,4 +32,93 @@ jobs:
         run: |
           sudo docker compose -f docker-compose.yml config --quiet
           sudo docker compose -f mssql/docker-compose.yml config --quiet
-          echo "All Docker Compose configurations are valid."
+
+  dr-test-postgres:
+    name: 2. DR Test — PostgreSQL 16 (PITR + S3 TLS)
+    needs: validate
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare clean environment & S3 TLS certificates
+        run: |
+          sudo docker rm -f backup-s3 pg-primary pg-dr 2>/dev/null || true
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout s3/key.pem \
+            -out s3/cert.pem \
+            -days 1 \
+            -subj "/CN=minio"
+          chmod 644 s3/key.pem s3/cert.pem
+
+      - name: Start PostgreSQL + SeaweedFS S3 & initialize pgBackRest
+        run: |
+          sudo docker compose up -d --build
+          until sudo docker exec pg-primary pg_isready -U postgres >/dev/null 2>&1; do
+            sleep 2
+          done
+          sudo docker restart pg-primary
+          until sudo docker exec pg-primary pg_isready -U postgres >/dev/null 2>&1; do
+            sleep 2
+          done
+          sudo docker exec -u postgres pg-primary pgbackrest --stanza=prod stanza-create
+          sudo docker exec -u postgres pg-primary pgbackrest --stanza=prod check
+
+      - name: Run automated PITR DR test & capture RTO report
+        run: |
+          {
+            echo "=== PostgreSQL 16 Automated DR Audit Report ==="
+            echo "Date (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo "Commit: ${{ github.sha }}"
+            echo "-----------------------------------------------"
+            ./scripts/dr_test.sh
+            echo "-----------------------------------------------"
+            sudo docker exec -u postgres pg-primary pgbackrest info
+          } | tee postgres_dr_report.txt
+
+      - name: Upload PostgreSQL DR report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-dr-report
+          path: postgres_dr_report.txt
+          retention-days: 30
+
+      - name: Cleanup PostgreSQL containers & volumes
+        if: always()
+        run: sudo docker compose down -v
+
+  dr-test-mssql:
+    name: 3. DR Test — MS SQL Server 2022 (Tail-Log RPO=0)
+    needs: dr-test-postgres
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare clean MS SQL environment
+        run: |
+          sudo docker rm -f mssql-prod 2>/dev/null || true
+          sudo docker compose -f mssql/docker-compose.yml up -d
+
+      - name: Run Tail-Log (RPO=0) & COPY_ONLY tests
+        run: |
+          {
+            echo "=== MS SQL Server 2022 Automated DR Audit Report ==="
+            echo "Date (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo "Commit: ${{ github.sha }}"
+            echo "--------------------------------------------------"
+            ./mssql/scripts/dr_tail_log_test.sh
+            echo ""
+            ./mssql/scripts/test_copy_only.sh
+          } | tee mssql_dr_report.txt
+
+      - name: Upload MS SQL DR report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mssql-dr-report
+          path: mssql_dr_report.txt
+          retention-days: 30
+
+      - name: Cleanup MS SQL containers & volumes
+        if: always()
+        run: sudo docker compose -f mssql/docker-compose.yml down -v
